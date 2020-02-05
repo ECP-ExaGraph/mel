@@ -374,6 +374,7 @@ class MaxEdgeMatchRMA
         void process_window()
         {
             MPI_Win_flush_all(win_);
+            MPI_Barrier(MPI_COMM_WORLD);
             
             // incoming data sizes
             MPI_Alltoall(scounts_.data(), 1, MPI_GRAPH_TYPE, 
