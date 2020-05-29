@@ -1001,14 +1001,14 @@ class GenerateRGG
                
                 // cannot use genRandom if it's already been seeded
                 std::default_random_engine re(rande_seed); 
-                std::uniform_int_distribution<> IR, JR; 
-                std::uniform_real_distribution<> IJW; 
+                std::uniform_int_distribution<GraphElem> IR, JR; 
+                std::uniform_real_distribution<GraphWeight> IJW; 
  
                 for (GraphElem k = 0; k < pnrande; k++) {
 
                     // randomly pick start/end vertex and target from my list
-                    const GraphElem i = (GraphElem)IR(re, std::uniform_int_distribution<>::param_type{0, (n_- 1)});
-                    const GraphElem g_j = (GraphElem)JR(re, std::uniform_int_distribution<>::param_type{0, (nv_- 1)});
+                    const GraphElem i = (GraphElem)IR(re, std::uniform_int_distribution<GraphElem>::param_type{0, (n_- 1)});
+                    const GraphElem g_j = (GraphElem)JR(re, std::uniform_int_distribution<GraphElem>::param_type{0, (nv_- 1)});
                     const int target = g->get_owner(g_j);
                     const GraphElem j = g->global_to_local(g_j, target); // local
 
@@ -1045,7 +1045,7 @@ class GenerateRGG
                             else {
                                 unsigned randw_seed = reh((GraphElem)(g_i*nv_+g_j));
                                 std::default_random_engine rew(randw_seed); 
-                                weight = (GraphWeight)IJW(rew, std::uniform_real_distribution<>::param_type{0.0, 1.0});
+                                weight = (GraphWeight)IJW(rew, std::uniform_real_distribution<GraphWeight>::param_type{0.0, 1.0});
                             }
                         }
 

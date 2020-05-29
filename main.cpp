@@ -37,6 +37,7 @@ static GraphElem nvRGG = 0;
 static int generateGraph = 0;
 static int randomEdgePercent = 0;
 static bool randomNumberLCG = false;
+static bool readBalanced = false;
 static double threshold = 1.0E-6;
 static bool isUnitEdgeWeight = true;
 
@@ -86,7 +87,10 @@ int main(int argc, char *argv[])
     else // read input graph
     {
         BinaryEdgeList rm;
-        g = rm.read(me, nprocs, ranksPerNode, inputFileName);
+        if (readBalanced == true)
+            g = rm.read_balanced(me, nprocs, ranksPerNode, inputFileName);
+        else
+            g = rm.read(me, nprocs, ranksPerNode, inputFileName);
         //g->print();
     }
         
@@ -213,10 +217,13 @@ void parseCommandLine(const int argc, char * const argv[])
 {
   int ret;
 
-  while ((ret = getopt(argc, argv, "f:r:n:wlp:")) != -1) {
+  while ((ret = getopt(argc, argv, "f:br:n:wlp:")) != -1) {
     switch (ret) {
     case 'f':
       inputFileName.assign(optarg);
+      break;
+    case 'b':
+      readBalanced = true;
       break;
     case 'r':
       ranksPerNode = atoi(optarg);
