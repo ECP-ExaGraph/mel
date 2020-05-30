@@ -112,7 +112,11 @@ class Graph
             edge_indices_.clear();
             parts_.clear();
         }
-       
+         
+        // update vertex partition information
+        void repart(std::vector<GraphElem> const& parts)
+        { memcpy(parts_.data(), parts.data(), sizeof(GraphElem)*(size_+1)); }
+
         // TODO FIXME put asserts like the following
         // everywhere function member of Graph class
         void set_edge_index(GraphElem const vertex, GraphElem const e0)
@@ -125,7 +129,7 @@ class Graph
             edge_indices_[vertex] = e0;
 #endif
         } 
-        
+                
         void edge_range(GraphElem const vertex, GraphElem& e0, 
                 GraphElem& e1) const
         {
@@ -456,14 +460,75 @@ class BinaryEdgeList
 
             return g;
         }
-       
-        // TODO FIXME dry
-        // try to allocate similar number of edges per process
+
+        // find a distribution such that every 
+        // process own equal number of edges (serial)
+        void find_balanced_num_edges(int nprocs, std::string file, std::vector<GraphElem>& mbins)
+        {
+            FILE *fp;
+            GraphElem nv, ne; // #vertices, #edges
+            std::vector<GraphElem> nbins(nprocs,0);
+            
+            fp = fopen(file.c_str(), "rb");
+            if (fp == NULL) 
+            {
+                std::cout<< " Error opening file! " << std::endl;
+                return;
+            }
+
+            // read nv and ne
+            fread(&nv, sizeof(GraphElem), 1, fp);
+            fread(&ne, sizeof(GraphElem), 1, fp);
+          
+            // bin capacity
+            GraphElem nbcap = (ne / nprocs), ecount_idx, past_ecount_idx = 0;
+            int p = 0;
+
+            for (GraphElem m = 0; m < nv; m++)
+            {
+                fread(&ecount_idx, sizeof(GraphElem), 1, fp);
+               
+                // bins[p] >= capacity only for the last process
+                if ((nbins[p] < nbcap) || (p == (nprocs - 1)))
+                    nbins[p] += (ecount_idx - past_ecount_idx);
+
+                // increment p as long as p is not the last process
+                // worst case: excess edges piled up on (p-1)
+                if ((nbins[p] >= nbcap) && (p < (nprocs - 1)))
+                    p++;
+
+                mbins[p+1]++;
+                past_ecount_idx = ecount_idx;
+            }
+            
+            fclose(fp);
+
+            // prefix sum to store indices 
+            for (int k = 1; k < nprocs+1; k++)
+                mbins[k] += mbins[k-1]; 
+            
+            nbins.clear();
+        }
+        
+	// read a file and return a graph
+	// uses a balanced distribution
+        // (approximately equal #edges per process) 
         Graph* read_balanced(int me, int nprocs, int ranks_per_node, std::string file)
         {
             int file_open_error;
             MPI_File fh;
             MPI_Status status;
+            std::vector<GraphElem> mbins(nprocs+1,0);
+
+            // find #vertices per process such that 
+            // each process roughly owns equal #edges
+            if (me == 0)
+            {
+                find_balanced_num_edges(nprocs, file, mbins);
+                std::cout << "Trying to achieve equal edge distribution across processes." << std::endl;
+            }
+            MPI_Barrier(comm_);
+            MPI_Bcast(mbins.data(), nprocs+1, MPI_GRAPH_TYPE, 0, comm_);
 
             // specify the number of aggregates
             MPI_Info info;
@@ -488,22 +553,17 @@ class BinaryEdgeList
             // read the dimensions 
             MPI_File_read_all(fh, &M_, sizeof(GraphElem), MPI_BYTE, &status);
             MPI_File_read_all(fh, &N_, sizeof(GraphElem), MPI_BYTE, &status);
-            
-            // local graph
-            M_local_ = ((M_*(me + 1)) / nprocs) - ((M_*me) / nprocs);
+            M_local_ = mbins[me+1] - mbins[me];
 
-            Graph* g = new Graph(M_local_, 0, M_, N_);
-            
-            // Let N = array length and P = number of processors.
-            // From j = 0 to P-1,
-            // Starting point of array on processor j = floor(N * j / P)
-            // Length of array on processor j = floor(N * (j + 1) / P) - floor(N * j / P)
+            // create local graph
+            Graph *g = new Graph(M_local_, 0, M_, N_);
+            // readjust parts with new vertex partition
+            g->repart(mbins);
 
-            uint64_t tot_bytes=(M_local_+1)*sizeof(GraphElem);
-            MPI_Offset offset = 2*sizeof(GraphElem) + ((M_*me) / nprocs)*sizeof(GraphElem);
+	    uint64_t tot_bytes=(M_local_+1)*sizeof(GraphElem);
+            MPI_Offset offset = 2*sizeof(GraphElem) + mbins[me]*sizeof(GraphElem);
 
             // read in INT_MAX increments if total byte size is > INT_MAX
-            
             if (tot_bytes < INT_MAX)
                 MPI_File_read_at(fh, offset, &g->edge_indices_[0], tot_bytes, MPI_BYTE, &status);
             else 
@@ -549,34 +609,22 @@ class BinaryEdgeList
                         chunk_bytes = (tot_bytes - transf_bytes);
                 } 
             }    
-
-            MPI_File_close(&fh);
+            
+	    MPI_File_close(&fh);
 
             for(GraphElem i=1;  i < M_local_+1; i++)
                 g->edge_indices_[i] -= g->edge_indices_[0];   
             g->edge_indices_[0] = 0;
             
-            // store reference to edge and active info
+	    // store reference to edge and active info
             // and ensure weights are positive
-            
-            for (GraphElem i = 0; i < g->get_lnv(); i++)
+            for (GraphElem i=0; i < g->edge_list_.size(); i++)
             {
-                GraphElem e0, e1;
-                g->edge_range(i, e0, e1);
-                GraphElem base = g->get_base(me);
-
-                for (GraphElem e = e0; e < e1; e++)
-                {
-                    Edge const& cedge = g->get_edge(e);
-                    Edge& edge = g->set_edge(e);
-
-                    if ((i + base) != edge.tail_) // no self loops
-                    {
-                        edge.weight_ = std::fabs(edge.weight_);
-                        g->edge_active_.emplace_back(cedge);
-                    }
-                }
+                //g->edge_list_[i].weight_ = std::fabs(g->edge_list_[i].weight_);
+                g->edge_active_.emplace_back(g->edge_list_[i]);
             }
+
+            mbins.clear();
 
             return g;
         }
