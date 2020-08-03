@@ -11,6 +11,8 @@
 #include <utility>
 #include <cstring>
 
+#include <omp.h>
+
 // MPI message tags
 #define MATE_REQUEST_TAG        1 // mate[x] = y, if mate[y] = x, then match (x/y in different processes)
 #define MATE_REJECT_TAG         2 // reject vertex mate, requires to update mate
@@ -393,7 +395,7 @@ class MaxEdgeMatchP2P
         {
             GraphElem e0, e1;
             g_->edge_range(v, e0, e1);
-
+#pragma omp parallel for 
             for (GraphElem e = e0; e < e1; e++)
             {
                 EdgeActive& edge = g_->get_active_edge(e);
@@ -401,7 +403,6 @@ class MaxEdgeMatchP2P
                 {
                     if (edge.edge_.weight_ > max_edge.weight_)
                         max_edge = edge.edge_;
-
                     // break tie using vertex index
                     if (is_same(edge.edge_.weight_, max_edge.weight_))
                         if (edge.edge_.tail_ > max_edge.tail_)
@@ -417,20 +418,19 @@ class MaxEdgeMatchP2P
             GraphElem e0, e1;
             const GraphElem lx = g_->global_to_local(x);
             const int y_owner = g_->get_owner(y);
-
             g_->edge_range(lx, e0, e1);
-
+#pragma omp parallel for 
             for (GraphElem e = e0; e < e1; e++)
             {
                 EdgeActive& edge = g_->get_active_edge(e);
                 if (edge.edge_.tail_ == y && edge.active_)
                 {
                     edge.active_ = false;
-
                     if (y_owner != rank_)
+                    {
+#pragma omp atomic update
                         ghost_count_[lx] -= 1;
-                    
-                    break;
+                    }
                 }
             }
         }

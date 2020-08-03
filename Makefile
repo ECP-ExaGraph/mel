@@ -1,6 +1,6 @@
 CXX = mpicxx
 # use -xmic-avx512 instead of -xHost for Intel Xeon Phi platforms
-OPTFLAGS = -O3 -DCHECK_RESULTS  #-DPRINT_RESULTS #-DDEBUG_PRINTF
+OPTFLAGS = -O3 -fopenmp -DCHECK_RESULTS -DUSE_MPI_P2P #-DPRINT_RESULTS #-DDEBUG_PRINTF
 
 # Options for choosing the MPI variants
 #-DUSE_MPI_NPP
