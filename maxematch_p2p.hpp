@@ -395,18 +395,30 @@ class MaxEdgeMatchP2P
         {
             GraphElem e0, e1;
             g_->edge_range(v, e0, e1);
-#pragma omp parallel for 
+            GraphWeight max_weight = -1.0;
+            GraphElem max_tail = -1;
+//#pragma omp parallel for reduction(max:max_weight, max_tail) 
             for (GraphElem e = e0; e < e1; e++)
             {
                 EdgeActive& edge = g_->get_active_edge(e);
                 if (edge.active_)
                 {
-                    if (edge.edge_.weight_ > max_edge.weight_)
+                    if (edge.edge_.weight_ > max_weight)
+                    {
                         max_edge = edge.edge_;
+                        max_weight = edge.edge_.weight_;
+                        max_tail = edge.edge_.tail_;
+                    }
                     // break tie using vertex index
-                    if (is_same(edge.edge_.weight_, max_edge.weight_))
-                        if (edge.edge_.tail_ > max_edge.tail_)
+                    if (is_same(edge.edge_.weight_, max_weight))
+                    {
+                        if (edge.edge_.tail_ > max_tail)
+                        {
                             max_edge = edge.edge_;
+                            max_weight = edge.edge_.weight_;
+                            max_tail = edge.edge_.tail_;
+                        }
+                    }
                 }
             }
         }
@@ -419,7 +431,6 @@ class MaxEdgeMatchP2P
             const GraphElem lx = g_->global_to_local(x);
             const int y_owner = g_->get_owner(y);
             g_->edge_range(lx, e0, e1);
-#pragma omp parallel for 
             for (GraphElem e = e0; e < e1; e++)
             {
                 EdgeActive& edge = g_->get_active_edge(e);
@@ -427,10 +438,8 @@ class MaxEdgeMatchP2P
                 {
                     edge.active_ = false;
                     if (y_owner != rank_)
-                    {
-#pragma omp atomic update
                         ghost_count_[lx] -= 1;
-                    }
+                    break;
                 }
             }
         }
