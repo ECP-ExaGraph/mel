@@ -379,8 +379,9 @@ class MaxEdgeMatchP2P
             for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
-                const GraphElem x = g_->global_to_local(i);
-                g_->edge_range(x, e0, e1);
+                const GraphElem x = g_->local_to_global(i);
+                const GraphElem lx = g_->global_to_local(x);
+                g_->edge_range(lx, e0, e1);
                 for (GraphElem e = e0; e < e1; e++)
                 {
                     EdgeActive& edge = g_->get_active_edge(e);
@@ -395,7 +396,7 @@ class MaxEdgeMatchP2P
                                 max_edges[i] = edge.edge_;
                     }
                 }
-                const GraphElem y = mate_[x] = max_edges[i].tail_;
+                const GraphElem y = mate_[lx] = max_edges[i].tail_;
                 // initiate matching request
                 if (y != -1)
                 {
@@ -417,10 +418,6 @@ class MaxEdgeMatchP2P
                 }
                 else // invalidate all neigboring vertices 
                 {
-                    GraphElem e0, e1;
-                    const GraphElem lx = g_->global_to_local(x);
-                    g_->edge_range(lx, e0, e1);
-
                     for (GraphElem e = e0; e < e1; e++)
                     {
                         EdgeActive& edge = g_->get_active_edge(e);
@@ -442,8 +439,11 @@ class MaxEdgeMatchP2P
             // communication
             for (GraphElem i = 0; i < lnv; i++)
             {
-                const GraphElem x = g_->global_to_local(i);
-                const GraphElem y = mate_[x] = max_edges[i].tail_;
+                const GraphElem x = g_->local_to_global(i);
+                const GraphElem lx = g_->global_to_local(x);
+                const GraphElem y = mate_[lx] = max_edges[i].tail_;
+                GraphElem e0, e1;
+                g_->edge_range(lx, e0, e1);
                 // initiate matching request
                 if (y != -1)
                 {
@@ -458,10 +458,6 @@ class MaxEdgeMatchP2P
                 }
                 else // invalidate all neigboring vertices 
                 {
-                    GraphElem e0, e1;
-                    const GraphElem lx = g_->global_to_local(x);
-                    g_->edge_range(lx, e0, e1);
-
                     for (GraphElem e = e0; e < e1; e++)
                     {
                         EdgeActive& edge = g_->get_active_edge(e);
