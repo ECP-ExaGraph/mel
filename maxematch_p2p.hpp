@@ -421,16 +421,14 @@ class MaxEdgeMatchP2P
                     for (GraphElem e = e0; e < e1; e++)
                     {
                         EdgeActive& edge = g_->get_active_edge(e);
-
                         if (edge.active_)
                         {
                             const GraphElem z = edge.edge_.tail_;
                             const int z_owner = g_->get_owner(z);
                             if (z_owner == rank_)
                             {
-                                // invalidate x -- z
                                 edge.active_ = false;
-                                deactivate_edge(z, x);
+                                deactivate_edge(z, x); // invalidate x -- z
                             }
                         }
                     }
@@ -461,16 +459,16 @@ class MaxEdgeMatchP2P
                     for (GraphElem e = e0; e < e1; e++)
                     {
                         EdgeActive& edge = g_->get_active_edge(e);
-                        const GraphElem z = edge.edge_.tail_;
                         if (edge.active_)
                         {
+                            const GraphElem z = edge.edge_.tail_;
                             const int z_owner = g_->get_owner(z);
                             if (z_owner != rank_) // ghost, send INVALID
                             {
                                 edge.active_ = false;
                                 ghost_count_[lx] -= 1;
                                 GraphElem z_x[2] = {z, x};
-                                TaggedIsend(MATE_INVALID_TAG, z_owner, z_x);  
+                                TaggedIsend(MATE_INVALID_TAG, z_owner, z_x); // invalidate x -- z
                             }
                         }
                     }
