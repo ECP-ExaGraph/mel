@@ -268,6 +268,14 @@ class MaxEdgeMatchP2P
 
             sbuf_ctr_ += 2;
         }
+       
+        // store outgoing data in the buffer
+        void RecordOutgoing(GraphElem data[2])
+        {
+            // copy into persistent buffer before messaging 
+            memcpy(&sbuf_[sbuf_ctr_], data, 2*sizeof(GraphElem));
+            sbuf_ctr_ += 2;
+        }
 
         // search v in M_ (local list
         // of matched vertices)
@@ -370,10 +378,88 @@ class MaxEdgeMatchP2P
         {
             // Part #1 -- initialize candidate mate
             GraphElem lnv = g_->get_lnv();
-            
+#if defined(FIRST_PHASE_OMP)
+            for (GraphElem i = 0; i < lnv; i++)
+            {
+                GraphElem e0, e1;
+                const GraphElem v = g_->global_to_local(i);
+                Edge max_edge;
+                g_->edge_range(v, e0, e1);
+                for (GraphElem e = e0; e < e1; e++)
+                {
+                    EdgeActive& edge = g_->get_active_edge(e);
+                    if (edge.active_)
+                    {
+                        if (edge.edge_.weight_ > max_edge.weight_)
+                            max_edge = edge.edge_;
+
+                        // break tie using vertex index
+                        if (is_same(edge.edge_.weight_, max_edge.weight_))
+                            if (edge.edge_.tail_ > max_edge.tail_)
+                                max_edge = edge.edge_;
+                    }
+                }
+                const GraphElem y = mate_[v] = max_edge.tail_;
+                // initiate matching request
+                if (y != -1)
+                {
+                    // check if y can be matched
+                    const int y_owner = g_->get_owner(y);
+                    if (y_owner == rank_)
+                    {
+                        if (mate_[g_->global_to_local(y)] == x)
+                        {
+                            D_.push_back(x);
+                            D_.push_back(y);
+                            M_.emplace_back(x, y, x_max_edge.weight_);
+
+                            // mark y<->x inactive, because its matched
+                            deactivate_edge(y, x);
+                            deactivate_edge(x, y);
+                        }
+                    }
+                    else // ghost, send REQUEST
+                    {
+                        deactivate_edge(x, y);
+
+                        GraphElem y_x[2] = {y, x};
+                        TaggedIsend(MATE_REQUEST_TAG, y_owner, y_x);  
+                    }
+                }
+                else // invalidate all neigboring vertices 
+                {
+                    GraphElem e0, e1;
+                    g_->edge_range(lx, e0, e1);
+
+                    for (GraphElem e = e0; e < e1; e++)
+                    {
+                        EdgeActive& edge = g_->get_active_edge(e);
+                        const GraphElem z = edge.edge_.tail_;
+
+                        if (edge.active_)
+                        {
+                            // invalidate x -- z
+                            edge.active_ = false;
+
+                            const int z_owner = g_->get_owner(z);
+
+                            if (z_owner == rank_)
+                                deactivate_edge(z, x);
+                            else // ghost, send INVALID
+                            {
+                                ghost_count_[lx] -= 1;
+
+                                GraphElem z_x[2] = {z, x};
+                                TaggedIsend(MATE_INVALID_TAG, z_owner, z_x);  
+                            }
+                        }
+                    }
+                }
+            }
+#else
             for (GraphElem i = 0; i < lnv; i++)
                 find_mate(g_->local_to_global(i));
-            
+#endif            
             // Part 2 -- complete nb synch sends
             while(1)
             {                         
@@ -395,30 +481,18 @@ class MaxEdgeMatchP2P
         {
             GraphElem e0, e1;
             g_->edge_range(v, e0, e1);
-            GraphWeight max_weight = -1.0;
-            GraphElem max_tail = -1;
-//#pragma omp parallel for reduction(max:max_weight, max_tail) 
             for (GraphElem e = e0; e < e1; e++)
             {
                 EdgeActive& edge = g_->get_active_edge(e);
                 if (edge.active_)
                 {
-                    if (edge.edge_.weight_ > max_weight)
-                    {
+                    if (edge.edge_.weight_ > max_edge.weight_)
                         max_edge = edge.edge_;
-                        max_weight = edge.edge_.weight_;
-                        max_tail = edge.edge_.tail_;
-                    }
+
                     // break tie using vertex index
-                    if (is_same(edge.edge_.weight_, max_weight))
-                    {
-                        if (edge.edge_.tail_ > max_tail)
-                        {
+                    if (is_same(edge.edge_.weight_, max_edge.weight_))
+                        if (edge.edge_.tail_ > max_edge.tail_)
                             max_edge = edge.edge_;
-                            max_weight = edge.edge_.weight_;
-                            max_tail = edge.edge_.tail_;
-                        }
-                    }
                 }
             }
         }
