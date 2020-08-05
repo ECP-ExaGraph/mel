@@ -376,6 +376,16 @@ class MaxEdgeMatchP2P
 #else
             std::vector<Edge> max_edges(lnv);
             // local computation (to be offloaded)
+#ifdef OMP_TARGET_OFFLOAD
+	    int ndevs = omp_get_num_devices();
+	    int to_offload = (ndevs > 0);
+#pragma omp target teams distribute parallel for if (to_offload) \
+	    map(tofrom:max_edges) \
+            map(g_) \
+	    device(rank_ % ndevs)
+#else
+#pragma omp parallel for default(shared), schedule(static)
+#endif
             for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
