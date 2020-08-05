@@ -374,8 +374,10 @@ class MaxEdgeMatchP2P
             for (GraphElem i = 0; i < lnv; i++)
                 find_mate(g_->local_to_global(i));
 #else
-            std::vector<Edge> max_edges(lnv);
             // local computation (to be offloaded)
+            std::vector<Edge> max_edges(lnv);
+            #pragma omp declare reduction(merge : std::vector<GraphElem> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
+            #pragma omp declare reduction(merge : std::vector<EdgeTuple> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
 #ifdef OMP_TARGET_OFFLOAD
 	    int ndevs = omp_get_num_devices();
 	    int to_offload = (ndevs > 0);
@@ -384,7 +386,7 @@ class MaxEdgeMatchP2P
             map(g_) \
 	    device(rank_ % ndevs)
 #else
-#pragma omp parallel for default(shared), schedule(static)
+#pragma omp parallel for default(shared) reduction(merge: D_, M_) schedule(static)
 #endif
             for (GraphElem i = 0; i < lnv; i++)
             {
@@ -545,7 +547,10 @@ class MaxEdgeMatchP2P
                     edge.active_ = false;
                     if (y_owner != rank_)
                     {
+#if defined(USE_MPI_ONLY)
+#else
                         #pragma omp atomic update
+#endif
                         ghost_count_[lx] -= 1;
                     }
                     break;
