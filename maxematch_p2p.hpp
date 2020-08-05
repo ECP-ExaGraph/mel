@@ -406,7 +406,10 @@ class MaxEdgeMatchP2P
                                 max_edges[i] = edge.edge_;
                     }
                 }
-                const GraphElem y = mate_[lx] = max_edges[i].tail_;
+                #pragma omp atomic write
+                mate_[lx] = max_edges[i].tail_;
+                const GraphElem y = mate_[lx];
+                
                 // initiate matching request
                 if (y != -1)
                 {
@@ -414,7 +417,10 @@ class MaxEdgeMatchP2P
                     const int y_owner = g_->get_owner(y);
                     if (y_owner == rank_)
                     {
-                        if (mate_[g_->global_to_local(y)] == x)
+                        GraphElem mate_y;
+                        #pragma omp atomic read
+                        mate_y = mate_[g_->global_to_local(y)]; 
+                        if (mate_y == x)
                         {
                             D_.push_back(x);
                             D_.push_back(y);
@@ -444,6 +450,7 @@ class MaxEdgeMatchP2P
                     }
                 }
             }
+            // OMP region ends
             // communication
             for (GraphElem i = 0; i < lnv; i++)
             {
@@ -537,7 +544,10 @@ class MaxEdgeMatchP2P
                 {
                     edge.active_ = false;
                     if (y_owner != rank_)
+                    {
+                        #pragma omp atomic update
                         ghost_count_[lx] -= 1;
+                    }
                     break;
                 }
             }
