@@ -376,19 +376,100 @@ class MaxEdgeMatchP2P
 #else
             // local computation (to be offloaded)
             std::vector<Edge> max_edges(lnv);
-            #pragma omp declare reduction(merge : std::vector<GraphElem> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
-            #pragma omp declare reduction(merge : std::vector<EdgeTuple> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
 #ifdef OMP_TARGET_OFFLOAD
 	    int ndevs = omp_get_num_devices();
 	    int to_offload = (ndevs > 0);
+            Edge* max_edges_ptr = max_edges.data();
+            M_.resize(lnv);
+            D_.resize(lnv*2);
+            EdgeTuple* M_ptr = M_.data();
+            GraphElem* D_ptr = D_.data();
+            GraphElem* ghost_count_ptr = ghost_count_.data();
+            GraphElem m_ctr = 0, d_ctr = 0;
+            #pragma omp target enter data map(alloc:mate_[0:lnv])
+            #pragma omp target enter data map(alloc:M_ptr[0:lnv])
+            #pragma omp target enter data map(alloc:D_ptr[0:lnv*2])
+            #pragma omp target enter data map(alloc:ghost_count_ptr[0:lnv])
+            #pragma omp target enter data map(alloc:max_edges_ptr[0:lnv])
 #pragma omp target teams distribute parallel for if (to_offload) \
-	    map(tofrom:max_edges) \
-            map(g_) \
+            map(to:g_, rank_) \
+	    map(from:d_ctr, m_ctr) \
 	    device(rank_ % ndevs)
-#else
-#pragma omp parallel for default(shared) reduction(merge: D_, M_) schedule(static)
-#endif
             for (GraphElem i = 0; i < lnv; i++)
+            {
+                GraphElem e0, e1;
+                const GraphElem x = g_->local_to_global(i);
+                const GraphElem lx = g_->global_to_local(x);
+                g_->edge_range(lx, e0, e1);
+                for (GraphElem e = e0; e < e1; e++)
+                {
+                    EdgeActive& edge = g_->get_active_edge(e);
+                    if (edge.active_)
+                    {
+                        if (edge.edge_.weight_ > max_edges_ptr[i].weight_)
+                            max_edges_ptr[i] = edge.edge_;
+                        // break tie using vertex index
+                        if (is_same(edge.edge_.weight_, max_edges_ptr[i].weight_))
+                            if (edge.edge_.tail_ > max_edges_ptr[i].tail_)
+                                max_edges_ptr[i] = edge.edge_;
+                    }
+                }
+                #pragma omp atomic write
+                mate_[lx] = max_edges_ptr[i].tail_;
+                const GraphElem y = mate_[lx];
+                // initiate matching request
+                if (y != -1)
+                {
+                    // check if y can be matched
+                    const int y_owner = g_->get_owner(y);
+                    if (y_owner == rank_)
+                    {
+                        GraphElem mate_y;
+                        #pragma omp atomic read
+                        mate_y = mate_[g_->global_to_local(y)]; 
+                        if (mate_y == x)
+                        {
+                            D_ptr[d_ctr  ] = x;
+                            D_ptr[d_ctr+1] = y;
+                            #pragma omp atomic update
+                            d_ctr += 2;
+                            EdgeTuple et(x, y, max_edges_ptr[i].weight); 
+                            M_[m_ctr] = et;
+                            #pragma omp atomic update
+                            m_ctr += 1;
+			    // mark y<->x inactive, because its matched
+                            deactivate_edge_device(y, x, ghost_count_ptr);
+                            deactivate_edge_device(x, y, ghost_count_ptr);
+                        }
+                    }
+                }
+                else // invalidate all neigboring vertices 
+                {
+                    for (GraphElem e = e0; e < e1; e++)
+                    {
+                        EdgeActive& edge = g_->get_active_edge(e);
+                        if (edge.active_)
+                        {
+                            const GraphElem z = edge.edge_.tail_;
+                            const int z_owner = g_->get_owner(z);
+                            if (z_owner == rank_)
+                            {
+                                edge.active_ = false;
+                                deactivate_edge_device(z, x, ghost_count_ptr); // invalidate x -- z
+                            }
+                        }
+                    }
+                }
+            }
+            #pragma omp target exit data map(delete:M_ptr[0:lnv])
+            #pragma omp target exit data map(delete:D_ptr[0:lnv*2])
+            #pragma omp target exit data map(delete:ghost_count_ptr[0:lnv])
+            #pragma omp target exit data map(delete:max_edges_ptr[0:lnv])
+#else
+#pragma omp declare reduction(merge : std::vector<GraphElem> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
+#pragma omp declare reduction(merge : std::vector<EdgeTuple> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
+#pragma omp parallel for default(shared) reduction(merge: D_, M_) schedule(static)
+	    for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
                 const GraphElem x = g_->local_to_global(i);
@@ -452,6 +533,7 @@ class MaxEdgeMatchP2P
                     }
                 }
             }
+#endif
             // OMP region ends
             // communication
             for (GraphElem i = 0; i < lnv; i++)
@@ -558,6 +640,30 @@ class MaxEdgeMatchP2P
             }
         }
 
+#if defined(OMP_TARGET_OFFLOAD)   
+#pragma omp declare target     
+        inline void deactivate_edge_device(GraphElem x, GraphElem y, GraphElem *ghost_count_ptr)
+        {
+            GraphElem e0, e1;
+            const GraphElem lx = g_->global_to_local(x);
+            const int y_owner = g_->get_owner(y);
+            g_->edge_range(lx, e0, e1);
+            for (GraphElem e = e0; e < e1; e++)
+            {
+                EdgeActive& edge = g_->get_active_edge(e);
+                if (edge.edge_.tail_ == y && edge.active_)
+                {
+                    edge.active_ = false;
+                    if (y_owner != rank_)
+                    {
+                        #pragma omp atomic update
+                        ghost_count_ptr[lx] -= 1;
+                    }
+                }
+            }
+        }
+#pragma omp end declare target
+#endif
         // x is owned by me
         // compute y = mate[x], if mate[y] = x, match
         // else if y = -1, invalidate all edges adj(x)
