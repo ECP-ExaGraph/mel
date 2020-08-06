@@ -433,8 +433,8 @@ class MaxEdgeMatchP2P
                             D_ptr[d_ctr+1] = y;
                             #pragma omp atomic update
                             d_ctr += 2;
-                            EdgeTuple et(x, y, max_edges_ptr[i].weight); 
-                            M_[m_ctr] = et;
+                            EdgeTuple et(x, y, max_edges_ptr[i].weight_); 
+                            M_ptr[m_ctr] = et;
                             #pragma omp atomic update
                             m_ctr += 1;
 			    // mark y<->x inactive, because its matched
