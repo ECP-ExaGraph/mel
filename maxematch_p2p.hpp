@@ -388,7 +388,7 @@ class MaxEdgeMatchP2P
             GraphElem* ghost_count_ptr = ghost_count_.data();
 #pragma omp target parallel for if (to_offload) \
             map(to:g_) \
-	    map(from:mate_[0:lnv], M_ptr[0:lnv], D_ptr[0:lnv*2], ghost_count_ptr[0:lnv], max_edges_ptr[0:lnv]) 
+	    map(tofrom:mate_[0:lnv], M_ptr[0:lnv], D_ptr[0:lnv*2], ghost_count_ptr[0:lnv], max_edges_ptr[0:lnv]) 
             for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
@@ -408,7 +408,6 @@ class MaxEdgeMatchP2P
                                 max_edges_ptr[i] = edge.edge_;
                     }
                 }
-                #pragma omp atomic write
                 mate_[lx] = max_edges_ptr[i].tail_;
                 const GraphElem y = mate_[lx];
                 // initiate matching request
