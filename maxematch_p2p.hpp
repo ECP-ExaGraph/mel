@@ -379,22 +379,16 @@ class MaxEdgeMatchP2P
 #ifdef OMP_TARGET_OFFLOAD
 	    int ndevs = omp_get_num_devices();
 	    int to_offload = (ndevs > 0);
-            Edge* max_edges_ptr = max_edges.data();
+            max_edges.resize(lnv);
             M_.resize(lnv);
             D_.resize(lnv*2);
+            Edge* max_edges_ptr = max_edges.data();
             EdgeTuple* M_ptr = M_.data();
             GraphElem* D_ptr = D_.data();
             GraphElem* ghost_count_ptr = ghost_count_.data();
-            GraphElem m_ctr = 0, d_ctr = 0;
-            #pragma omp target enter data map(alloc:mate_[0:lnv])
-            #pragma omp target enter data map(alloc:M_ptr[0:lnv])
-            #pragma omp target enter data map(alloc:D_ptr[0:lnv*2])
-            #pragma omp target enter data map(alloc:ghost_count_ptr[0:lnv])
-            #pragma omp target enter data map(alloc:max_edges_ptr[0:lnv])
-#pragma omp target teams distribute parallel for if (to_offload) \
-            map(to:g_, rank_) \
-	    map(from:d_ctr, m_ctr) \
-	    device(rank_ % ndevs)
+#pragma omp target parallel for if (to_offload) \
+            map(to:g_) \
+	    map(from:mate_[0:lnv], M_ptr[0:lnv], D_ptr[0:lnv*2], ghost_count_ptr[0:lnv], max_edges_ptr[0:lnv]) 
             for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
@@ -429,14 +423,10 @@ class MaxEdgeMatchP2P
                         mate_y = mate_[g_->global_to_local(y)]; 
                         if (mate_y == x)
                         {
-                            D_ptr[d_ctr  ] = x;
-                            D_ptr[d_ctr+1] = y;
-                            #pragma omp atomic update
-                            d_ctr += 2;
+                            D_ptr[i    ] = x;
+                            D_ptr[i + 1] = y;
                             EdgeTuple et(x, y, max_edges_ptr[i].weight_); 
-                            M_ptr[m_ctr] = et;
-                            #pragma omp atomic update
-                            m_ctr += 1;
+                            M_ptr[i] = et;
 			    // mark y<->x inactive, because its matched
                             deactivate_edge_device(y, x, ghost_count_ptr);
                             deactivate_edge_device(x, y, ghost_count_ptr);
@@ -460,11 +450,7 @@ class MaxEdgeMatchP2P
                         }
                     }
                 }
-            }
-            #pragma omp target exit data map(delete:M_ptr[0:lnv])
-            #pragma omp target exit data map(delete:D_ptr[0:lnv*2])
-            #pragma omp target exit data map(delete:ghost_count_ptr[0:lnv])
-            #pragma omp target exit data map(delete:max_edges_ptr[0:lnv])
+            }            
 #else
 #pragma omp declare reduction(merge : std::vector<GraphElem> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
 #pragma omp declare reduction(merge : std::vector<EdgeTuple> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
