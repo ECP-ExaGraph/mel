@@ -627,7 +627,6 @@ class MaxEdgeMatchP2P
         }
 
 #if defined(OMP_TARGET_OFFLOAD)   
-#pragma omp declare target     
         inline void deactivate_edge_device(GraphElem x, GraphElem y, GraphElem *ghost_count_ptr)
         {
             GraphElem e0, e1;
@@ -648,7 +647,6 @@ class MaxEdgeMatchP2P
                 }
             }
         }
-#pragma omp end declare target
 #endif
         // x is owned by me
         // compute y = mate[x], if mate[y] = x, match
