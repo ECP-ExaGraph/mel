@@ -129,14 +129,7 @@ class Graph
             edge_indices_[vertex] = e0;
 #endif
         } 
-                
-        void edge_range(GraphElem const vertex, GraphElem& e0, 
-                GraphElem& e1) const
-        {
-            e0 = edge_indices_[vertex];
-            e1 = edge_indices_[vertex+1];
-        } 
-
+ 
         // collective
         void set_nedges(GraphElem lne) 
         { 
@@ -168,7 +161,14 @@ class Graph
                 disp += counts[i-1];
             }
         }
-
+            
+        void edge_range(GraphElem const vertex, GraphElem& e0, 
+                GraphElem& e1) const
+        {
+            e0 = edge_indices_[vertex];
+            e1 = edge_indices_[vertex+1];
+        } 
+ 
         GraphElem get_base(const int rank) const
         { return parts_[rank]; }
 
@@ -218,7 +218,7 @@ class Graph
 
         GraphElem global_to_local(GraphElem idx, int rank)
         { return (idx - get_base(rank)); }
- 
+
         // print edge list (with weights)
         void print(bool print_weight = true) const
         {
@@ -312,6 +312,7 @@ class Graph
         MPI_Comm comm_; 
         int rank_, size_;
 };
+
 
 // read in binary edge list files
 // using MPI I/O
