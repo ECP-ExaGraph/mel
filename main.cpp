@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
     // command line options
     parseCommandLine(argc, argv);
  
-    Graph* g = nullptr;
+    MPIGraph* g = nullptr;
     
     td0 = MPI_Wtime();
 

@@ -21,16 +21,17 @@
 class MaxEdgeMatchP2P
 {
     public:
-        MaxEdgeMatchP2P(Graph* g): 
-            g_(g), D_(0), M_(0), 
+        MaxEdgeMatchP2P(MPIGraph* dg): 
+            dg_(dg), D_(0), M_(0), 
             sbuf_ctr_(0), tot_ghosts_(0)
         {
-            comm_ = g_->get_comm();
+            comm_ = dg_->get_comm();
+            g_ = dg_->local_graph();
             MPI_Comm_size(comm_, &size_);
             MPI_Comm_rank(comm_, &rank_);
 
             // initialize mate_
-            const GraphElem lnv = g_->get_lnv();
+            const GraphElem lnv = g_->get_nv();
             mate_ = new GraphElem[lnv];
             std::fill(mate_, mate_ + lnv, -1);
                        
@@ -49,7 +50,7 @@ class MaxEdgeMatchP2P
                     
                     // all edge is active in the beginning,
                     // so no need to check edge.active_
-                    if (g_->get_owner(edge.tail_) != rank_)
+                    if (dg_->get_owner(edge.tail_) != rank_)
                         ghost_count_[i] += 1;
                 }
 
@@ -82,13 +83,14 @@ class MaxEdgeMatchP2P
         inline bool is_same(GraphWeight a, GraphWeight b) 
         { return std::abs(a - b) <= std::numeric_limits<GraphWeight>::epsilon(); }
 
+
         /* Validation */
         // if mate[mate[v]] == v then
         // we're good
         void check_results()
         {
             // gather M_ and mate_
-            const int lnv = g_->get_lnv();
+            const int lnv = g_->get_nv();
             unsigned int m_size = M_.size(), m_global_size = 0;
             // i,j
             m_size *= 2;
@@ -126,7 +128,7 @@ class MaxEdgeMatchP2P
             // communication params (at root)
             if (rank_ == 0)
             {
-                const GraphElem nv = g_->get_nv();
+                const GraphElem nv = dg_->get_nv();
                 mate_global = new GraphElem[nv];
                 M_global = new GraphElem[m_global_size];
 
@@ -294,7 +296,11 @@ class MaxEdgeMatchP2P
             {    
                 GraphElem v = D_.back();
                 D_.pop_back();
-                const int v_owner = g_->get_owner(v);
+#ifdef OMP_TARGET_OFFLOAD
+                if (v == -1)
+                    continue;
+#endif
+                const int v_owner = dg_->get_owner(v);
 
                 if (v_owner == rank_)
                     process_neighbors(v);
@@ -332,7 +338,7 @@ class MaxEdgeMatchP2P
                     // deactivate edge
                     deactivate_edge(g_l[0], g_l[1]);
 
-                    if (mate_[g_->global_to_local(g_l[0])] == g_l[1])
+                    if (mate_[dg_->global_to_local(g_l[0])] == g_l[1])
                     {
                         M_.emplace_back(g_l[0], g_l[1], 0.0);
 
@@ -358,7 +364,7 @@ class MaxEdgeMatchP2P
                 deactivate_edge(g_l[0], g_l[1]);
 
                 // recalculate mate[x]
-                if (mate_[g_->global_to_local(g_l[0])] == g_l[1])
+                if (mate_[dg_->global_to_local(g_l[0])] == g_l[1])
                     find_mate(g_l[0]);
             }
             else // INVALID: deactivate x -- v
@@ -369,26 +375,27 @@ class MaxEdgeMatchP2P
         void maxematch_p2p()
         {
             // Part #1 -- initialize candidate mate
-            GraphElem lnv = g_->get_lnv();
+            GraphElem lnv = g_->get_nv();
+            GraphElem lne = g_->get_ne();
 #if defined(USE_MPI_ONLY)
             for (GraphElem i = 0; i < lnv; i++)
-                find_mate(g_->local_to_global(i));
+                find_mate(dg_->local_to_global(i));
 #else
             // local computation (to be offloaded)
             std::vector<Edge> max_edges(lnv);
 #ifdef OMP_TARGET_OFFLOAD
 	    int ndevs = omp_get_num_devices();
 	    int to_offload = (ndevs > 0);
-            max_edges.resize(lnv);
             M_.resize(lnv);
             D_.resize(lnv*2);
+            std::fill(D_.begin(), D_.end(), -1);
             Edge* max_edges_ptr = max_edges.data();
             EdgeTuple* M_ptr = M_.data();
             GraphElem* D_ptr = D_.data();
             GraphElem* ghost_count_ptr = ghost_count_.data();
-#pragma omp target parallel for if (to_offload) \
+            #pragma omp target teams distribute parallel for if (to_offload) \
             map(to:g_) \
-	    map(tofrom:mate_[0:lnv], M_ptr[0:lnv], D_ptr[0:lnv*2], ghost_count_ptr[0:lnv], max_edges_ptr[0:lnv]) 
+            map(from:mate_[0:lnv], max_edges_ptr[0:lnv], M_ptr[0:lnv], D_ptr[0:lnv*2], ghost_count_ptr[0:lnv])
             for (GraphElem i = 0; i < lnv; i++)
             {
                 GraphElem e0, e1;
@@ -403,9 +410,11 @@ class MaxEdgeMatchP2P
                         if (edge.edge_.weight_ > max_edges_ptr[i].weight_)
                             max_edges_ptr[i] = edge.edge_;
                         // break tie using vertex index
-                        if (is_same(edge.edge_.weight_, max_edges_ptr[i].weight_))
+                        if (edge.edge_.weight_ == max_edges_ptr[i].weight_)
+                        {
                             if (edge.edge_.tail_ > max_edges_ptr[i].tail_)
                                 max_edges_ptr[i] = edge.edge_;
+                        }
                     }
                 }
                 mate_[lx] = max_edges_ptr[i].tail_;
@@ -414,21 +423,19 @@ class MaxEdgeMatchP2P
                 if (y != -1)
                 {
                     // check if y can be matched
-                    const int y_owner = g_->get_owner(y);
-                    if (y_owner == rank_)
+                    if (g_->is_owner(y))
                     {
-                        GraphElem mate_y;
-                        #pragma omp atomic read
+                        GraphElem mate_y; 
                         mate_y = mate_[g_->global_to_local(y)]; 
                         if (mate_y == x)
                         {
-                            D_ptr[i    ] = x;
-                            D_ptr[i + 1] = y;
+                            D_ptr[i*2    ] = x;
+                            D_ptr[i*2 + 1] = y;
                             EdgeTuple et(x, y, max_edges_ptr[i].weight_); 
                             M_ptr[i] = et;
 			    // mark y<->x inactive, because its matched
-                            deactivate_edge_device(y, x, ghost_count_ptr);
-                            deactivate_edge_device(x, y, ghost_count_ptr);
+                            g_->deactivate_edge(y, x, ghost_count_ptr);
+                            g_->deactivate_edge(x, y, ghost_count_ptr);
                         }
                     }
                 }
@@ -440,16 +447,15 @@ class MaxEdgeMatchP2P
                         if (edge.active_)
                         {
                             const GraphElem z = edge.edge_.tail_;
-                            const int z_owner = g_->get_owner(z);
-                            if (z_owner == rank_)
+                            if (g_->is_owner(z))
                             {
                                 edge.active_ = false;
-                                deactivate_edge_device(z, x, ghost_count_ptr); // invalidate x -- z
+                                g_->deactivate_edge(z, x, ghost_count_ptr); // invalidate x -- z
                             }
                         }
                     }
                 }
-            }            
+            }           
 #else
 #pragma omp declare reduction(merge : std::vector<GraphElem> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
 #pragma omp declare reduction(merge : std::vector<EdgeTuple> : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
@@ -482,7 +488,7 @@ class MaxEdgeMatchP2P
                 if (y != -1)
                 {
                     // check if y can be matched
-                    const int y_owner = g_->get_owner(y);
+                    const int y_owner = dg_->get_owner(y);
                     if (y_owner == rank_)
                     {
                         GraphElem mate_y;
@@ -493,7 +499,6 @@ class MaxEdgeMatchP2P
                             D_.push_back(x);
                             D_.push_back(y);
                             M_.emplace_back(x, y, max_edges[i].weight_);
-
                             // mark y<->x inactive, because its matched
                             deactivate_edge(y, x);
                             deactivate_edge(x, y);
@@ -508,7 +513,7 @@ class MaxEdgeMatchP2P
                         if (edge.active_)
                         {
                             const GraphElem z = edge.edge_.tail_;
-                            const int z_owner = g_->get_owner(z);
+                            const int z_owner = dg_->get_owner(z);
                             if (z_owner == rank_)
                             {
                                 edge.active_ = false;
@@ -519,6 +524,7 @@ class MaxEdgeMatchP2P
                 }
             }
 #endif
+            MPI_Barrier(comm_);
             // OMP region ends
             // communication
             for (GraphElem i = 0; i < lnv; i++)
@@ -532,7 +538,7 @@ class MaxEdgeMatchP2P
                 if (y != -1)
                 {
                     // check if y can be matched
-                    const int y_owner = g_->get_owner(y);
+                    const int y_owner = dg_->get_owner(y);
                     if (y_owner != rank_) // ghost, send REQUEST
                     {
                         deactivate_edge(x, y);
@@ -548,7 +554,7 @@ class MaxEdgeMatchP2P
                         if (edge.active_)
                         {
                             const GraphElem z = edge.edge_.tail_;
-                            const int z_owner = g_->get_owner(z);
+                            const int z_owner = dg_->get_owner(z);
                             if (z_owner != rank_) // ghost, send INVALID
                             {
                                 edge.active_ = false;
@@ -561,6 +567,7 @@ class MaxEdgeMatchP2P
                 }
             }
 #endif            
+            MPI_Barrier(comm_);
             // Part 2 -- complete nb synch sends
             while(1)
             {                         
@@ -604,7 +611,7 @@ class MaxEdgeMatchP2P
         {
             GraphElem e0, e1;
             const GraphElem lx = g_->global_to_local(x);
-            const int y_owner = g_->get_owner(y);
+            const int y_owner = dg_->get_owner(y);
             g_->edge_range(lx, e0, e1);
             for (GraphElem e = e0; e < e1; e++)
             {
@@ -624,29 +631,7 @@ class MaxEdgeMatchP2P
                 }
             }
         }
-
-#if defined(OMP_TARGET_OFFLOAD)   
-        inline void deactivate_edge_device(GraphElem x, GraphElem y, GraphElem *ghost_count_ptr)
-        {
-            GraphElem e0, e1;
-            const GraphElem lx = g_->global_to_local(x);
-            const int y_owner = g_->get_owner(y);
-            g_->edge_range(lx, e0, e1);
-            for (GraphElem e = e0; e < e1; e++)
-            {
-                EdgeActive& edge = g_->get_active_edge(e);
-                if (edge.edge_.tail_ == y && edge.active_)
-                {
-                    edge.active_ = false;
-                    if (y_owner != rank_)
-                    {
-                        #pragma omp atomic update
-                        ghost_count_ptr[lx] -= 1;
-                    }
-                }
-            }
-        }
-#endif
+                
         // x is owned by me
         // compute y = mate[x], if mate[y] = x, match
         // else if y = -1, invalidate all edges adj(x)
@@ -662,7 +647,7 @@ class MaxEdgeMatchP2P
             if (y != -1)
             {
                 // check if y can be matched
-                const int y_owner = g_->get_owner(y);
+                const int y_owner = dg_->get_owner(y);
                 if (y_owner == rank_)
                 {
                     if (mate_[g_->global_to_local(y)] == x)
@@ -699,7 +684,7 @@ class MaxEdgeMatchP2P
                         // invalidate x -- z
                         edge.active_ = false;
                         
-                        const int z_owner = g_->get_owner(z);
+                        const int z_owner = dg_->get_owner(z);
                         
                         if (z_owner == rank_)
                             deactivate_edge(z, x);
@@ -745,7 +730,7 @@ class MaxEdgeMatchP2P
                         // invalidate v - x, because v is already matched, 
                         // and not with x
                         edge.active_ = false;
-                        const int x_owner = g_->get_owner(x);
+                        const int x_owner = dg_->get_owner(x);
 
                         // find another mate for x, as v 
                         // is already matched
@@ -771,6 +756,7 @@ class MaxEdgeMatchP2P
         }
 
     private:
+        MPIGraph* dg_;
         Graph* g_;
         std::vector<GraphElem> D_;
         std::vector<EdgeTuple> M_;

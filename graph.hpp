@@ -52,70 +52,43 @@ struct EdgeTuple
     {}
 };
 
-// per process graph instance
+// local graph class (no MPI literals)
 class Graph
 {
     public:
-        Graph(): 
-            lnv_(-1), lne_(-1), nv_(-1), 
-            ne_(-1), comm_(MPI_COMM_WORLD) 
-        {
-            MPI_Comm_size(comm_, &size_);
-            MPI_Comm_rank(comm_, &rank_);
-        }
-
-        // 1D distribution: vertex based distribution 
-        // assumed with equal number of vertices per 
-        // process
-
-        // edges could be set in this ctor
-        // or later using set_nedges
-        Graph(GraphElem lnv, GraphElem lne, 
-                GraphElem nv, GraphElem ne, 
-                MPI_Comm comm=MPI_COMM_WORLD): 
-            lnv_(lnv), lne_(lne), 
-            nv_(nv), ne_(ne), 
-            comm_(comm) 
-        {
-            MPI_Comm_size(comm_, &size_);
-            MPI_Comm_rank(comm_, &rank_);
-
-            edge_indices_.resize(lnv_+1, 0);
-            
-            parts_.resize(size_+1);
-            parts_[0] = 0;
-
-            for (GraphElem i = 1; i < size_+1; i++)
-                parts_[i]=((nv_ * i) / size_); 
-
-            set_nedges(lne_);
+        Graph(): nv_(-1), ne_(-1), range_{0}        
+        {}
+         
+        Graph(GraphElem ne): 
+            nv_(-1), ne_(ne)
+        { edge_list_.resize(ne_); }
+       
+        Graph(GraphElem nv, GraphElem ne, std::array<GraphElem,2> range): 
+            nv_(nv), ne_(ne), range_(range)        
+        { 
+            edge_indices_.resize(nv_+1, 0); 
+            edge_list_.resize(ne_);
         }
         
-        // edge based distribution, irregular
-        // number of vertices per node
-        Graph(GraphElem lne, 
-                GraphElem nv, GraphElem ne, 
-                MPI_Comm comm=MPI_COMM_WORLD): 
-            lnv_(0), lne_(lne), 
-            nv_(nv), ne_(ne), 
-            comm_(comm) 
-        {
-            MPI_Comm_size(comm_, &size_);
-            MPI_Comm_rank(comm_, &rank_);
-
-            set_nedges(ne);
-        }
         ~Graph() 
         {            
             edge_active_.clear();
             edge_list_.clear();
             edge_indices_.clear();
-            parts_.clear();
         }
-         
-        // update vertex partition information
-        void repart(std::vector<GraphElem> const& parts)
-        { memcpy(parts_.data(), parts.data(), sizeof(GraphElem)*(size_+1)); }
+                 
+        void set_nedges(GraphElem ne) 
+        { 
+            ne_ = ne;
+            edge_list_.resize(ne_);
+        }
+
+        void set_nvertices(GraphElem nv, std::array<GraphElem,2> range)
+        {
+            nv_ = nv;
+            range_ = range;
+            edge_indices_.resize(nv_+1, 0);
+        }
 
         // TODO FIXME put asserts like the following
         // everywhere function member of Graph class
@@ -129,38 +102,6 @@ class Graph
             edge_indices_[vertex] = e0;
 #endif
         } 
- 
-        // collective
-        void set_nedges(GraphElem lne) 
-        { 
-            lne_ = lne; 
-            edge_list_.resize(lne_);
-
-            // compute total number of edges
-            ne_ = 0;
-            MPI_Allreduce(&lne_, &ne_, 1, MPI_GRAPH_TYPE, MPI_SUM, comm_);
-        }
-
-        void set_nvertices(GraphElem lnv)
-        {
-            lnv_ = lnv;
-            edge_indices_.resize(lnv_+1, 0);
-
-            std::vector<GraphElem> counts(size_);
-            
-            parts_.resize(size_+1);
-            
-            MPI_Allgather(&lnv_, 1, MPI_GRAPH_TYPE, counts.data(), 
-                    1, MPI_GRAPH_TYPE, comm_);
-            
-            GraphElem disp = parts_[0] = 0;
-
-            for (GraphElem i = 1; i < size_+1; i++)
-            {
-                parts_[i] = disp;
-                disp += counts[i-1];
-            }
-        }
             
         void edge_range(GraphElem const vertex, GraphElem& e0, 
                 GraphElem& e1) const
@@ -169,29 +110,25 @@ class Graph
             e1 = edge_indices_[vertex+1];
         } 
  
-        GraphElem get_base(const int rank) const
-        { return parts_[rank]; }
-
-        GraphElem get_bound(const int rank) const
-        { return parts_[rank+1]; }
-        
-        GraphElem get_range(const int rank) const
-        { return (parts_[rank+1] - parts_[rank] + 1); }
-
-        int get_owner(const GraphElem vertex) const
-        {
-            const std::vector<GraphElem>::const_iterator iter = 
-                std::upper_bound(parts_.begin(), parts_.end(), vertex);
-
-            return (iter - parts_.begin() - 1);
-        }
-
-        GraphElem get_lnv() const { return lnv_; }
-        GraphElem get_lne() const { return lne_; }
         GraphElem get_nv() const { return nv_; }
         GraphElem get_ne() const { return ne_; }
-        MPI_Comm get_comm() const { return comm_; }
-       
+      
+	// range related 
+	bool is_owner(const GraphElem vertex) const
+	{
+            if (vertex >= range_[0] && vertex <= range_[1])
+                return true;
+	    return false;
+	}
+
+	// local <--> global index translation
+	// -----------------------------------
+	GraphElem local_to_global(GraphElem idx)
+	{ return (idx + range_[0]); }
+
+	GraphElem global_to_local(GraphElem idx)
+	{ return (idx - range_[0]); }
+
         // return edge and active info
         // ----------------------------
        
@@ -204,115 +141,234 @@ class Graph
         Edge& set_edge(GraphElem const index)
         { return edge_list_[index]; }       
         
-        // local <--> global index translation
-        // -----------------------------------
-        GraphElem local_to_global(GraphElem idx)
-        { return (idx + get_base(rank_)); }
-
-        GraphElem global_to_local(GraphElem idx)
-        { return (idx - get_base(rank_)); }
-       
-        // w.r.t passed rank
-        GraphElem local_to_global(GraphElem idx, int rank)
-        { return (idx + get_base(rank)); }
-
-        GraphElem global_to_local(GraphElem idx, int rank)
-        { return (idx - get_base(rank)); }
-
-        // print edge list (with weights)
-        void print(bool print_weight = true) const
+        void deactivate_edge(GraphElem x, GraphElem y, GraphElem *ghost_count_ptr)
         {
-            if (lne_ < MAX_PRINT_NEDGE)
+            GraphElem e0, e1;
+            const GraphElem lx = global_to_local(x);
+            bool is_y_owner = is_owner(y);
+            edge_range(lx, e0, e1);
+            for (GraphElem e = e0; e < e1; e++)
             {
-                for (int p = 0; p < size_; p++)
+                EdgeActive& edge = get_active_edge(e);
+                if (edge.edge_.tail_ == y && edge.active_)
                 {
-                    MPI_Barrier(comm_);
-                    if (p == rank_)
-                    {
-                        std::cout << "###############" << std::endl;
-                        std::cout << "Process #" << p << ": " << std::endl;
-                        std::cout << "###############" << std::endl;
-                        GraphElem base = get_base(p);
-                        for (GraphElem i = 0; i < lnv_; i++)
-                        {
-                            GraphElem e0, e1;
-                            edge_range(i, e0, e1);
-                            if (print_weight) { // print weights (default)
-                                for (GraphElem e = e0; e < e1; e++)
-                                {
-                                    Edge const& edge = get_edge(e);
-                                    std::cout << i+base << " " << edge.tail_ << " " << edge.weight_ << std::endl;
-                                }
-                            }
-                            else { // don't print weights
-                                for (GraphElem e = e0; e < e1; e++)
-                                {
-                                    Edge const& edge = get_edge(e);
-                                    std::cout << i+base << " " << edge.tail_ << std::endl;
-                                }
-                            }
-                        }
-                        MPI_Barrier(comm_);
-                    }
+                    edge.active_ = false;
+                    if (!is_y_owner)
+                        ghost_count_ptr[lx] -= 1;
                 }
             }
-            else
-            {
-                if (rank_ == 0)
-                    std::cout << "Graph size per process is {" << lnv_ << ", " << lne_ << 
-                        "}, which will overwhelm STDOUT." << std::endl;
-            }
         }
 
-        // print statistics about edge distribution
-        // TODO FIXME check the data types
-        void print_dist_stats()
-        {
-            GraphElem sumdeg = 0, maxdeg = 0;
-            
-            MPI_Reduce(&lne_, &sumdeg, 1, MPI_GRAPH_TYPE, MPI_SUM, 0, comm_);
-            MPI_Reduce(&lne_, &maxdeg, 1, MPI_GRAPH_TYPE, MPI_MAX, 0, comm_);
-            
-            GraphElem my_sq = lne_*lne_;
-            GraphElem sum_sq = 0;
-            MPI_Reduce(&my_sq, &sum_sq, 1, MPI_GRAPH_TYPE, MPI_SUM, 0, comm_);
-            
-            GraphWeight average  = (GraphWeight) sumdeg / size_;
-            GraphWeight avg_sq   = (GraphWeight) sum_sq / size_;
-            GraphWeight var = avg_sq - (average*average);
-            GraphWeight stddev  = sqrt(var);
-            
-            MPI_Barrier(comm_);
-
-            if (rank_ == 0)
-            {
-                std::cout << std::endl;
-                std::cout << "-------------------------------------------------------" << std::endl;
-                std::cout << "Graph edge distribution characteristics" << std::endl;
-                std::cout << "-------------------------------------------------------" << std::endl;
-                std::cout << "Number of vertices: " << nv_ << std::endl;
-                std::cout << "Number of edges: " << ne_ << std::endl;
-                std::cout << "Maximum number of edges: " << maxdeg << std::endl;
-                std::cout << "Average number of edges: " << average << std::endl;
-                std::cout << "Expected value of X^2: " << avg_sq << std::endl;
-                std::cout << "Variance: " << var << std::endl;
-                std::cout << "Standard deviation: " << stddev << std::endl;
-                std::cout << "-------------------------------------------------------" << std::endl;
-            }
-        }
-        
         // public variables        
         std::vector<EdgeActive> edge_active_;
         std::vector<GraphElem> edge_indices_;
         std::vector<Edge> edge_list_;
     private:
-        GraphElem lnv_, lne_, nv_, ne_;
-        std::vector<GraphElem> parts_;        
-        
-        MPI_Comm comm_; 
-        int rank_, size_;
+	GraphElem nv_, ne_;
+	std::array<GraphElem,2> range_;        
 };
 
+class MPIGraph
+{
+	public:
+		MPIGraph(): 
+			lnv_(-1), lne_(-1), nv_(-1), 
+			ne_(-1), comm_(MPI_COMM_WORLD) 
+		{ lg_ = new Graph(); }
+
+		MPIGraph(GraphElem lnv, GraphElem lne, 
+				GraphElem nv, GraphElem ne, 
+				MPI_Comm comm=MPI_COMM_WORLD): 
+			lnv_(lnv), lne_(lne), 
+			nv_(nv), ne_(ne), 
+			comm_(comm) 
+		{
+		    MPI_Comm_size(comm_, &size_);
+		    MPI_Comm_rank(comm_, &rank_);
+		    parts_.resize(size_+1);
+		    parts_[0] = 0;
+		    for (GraphElem i = 1; i < size_+1; i++)
+			parts_[i]=((nv_ * i) / size_); 
+                    std::array<GraphElem,2> range = {parts_[rank_], parts_[rank_+1]}; 
+		    lg_ = new Graph(lnv_, lne_, range);
+		}
+
+		MPIGraph(GraphElem lne, 
+				GraphElem nv, GraphElem ne, 
+				MPI_Comm comm=MPI_COMM_WORLD): 
+			lnv_(0), lne_(lne), 
+			nv_(nv), ne_(ne), 
+			comm_(comm) 
+		{
+		     MPI_Comm_size(comm_, &size_);
+		     MPI_Comm_rank(comm_, &rank_);
+		     lg_ = new Graph(lne_);
+		     set_nedges(ne);
+		}
+
+		~MPIGraph() 
+		{ 
+		    delete lg_;
+		    parts_.clear(); 
+		}
+
+		// update vertex partition information
+		void repart(std::vector<GraphElem> const& parts)
+		{ std::copy(parts.begin(), parts.end(), parts_.begin()); }
+
+		// collective
+		void set_nedges(GraphElem lne) 
+		{ 
+		    lne_ = lne;
+		    // compute total number of edges
+		    ne_ = 0;
+		    MPI_Allreduce(&lne_, &ne_, 1, MPI_GRAPH_TYPE, MPI_SUM, comm_);
+		    lg_->set_nedges(lne_); 
+		}
+
+		void set_nvertices(GraphElem lnv)
+		{
+		    lnv_ = lnv;
+		    std::vector<GraphElem> counts(size_);
+		    parts_.resize(size_+1);
+		    MPI_Allgather(&lnv_, 1, MPI_GRAPH_TYPE, counts.data(), 
+                        1, MPI_GRAPH_TYPE, comm_);
+		    GraphElem disp = parts_[0] = 0;
+		    for (GraphElem i = 1; i < size_+1; i++)
+                    {
+                        parts_[i] = disp;
+                        disp += counts[i-1];
+		    }
+                    std::array<GraphElem,2> range = {parts_[rank_], parts_[rank_+1]}; 
+		    lg_->set_nvertices(lnv_, range);
+		}
+
+		MPI_Comm get_comm() const { return comm_; }
+		GraphElem get_lnv() const { return lnv_; }
+		GraphElem get_lne() const { return lne_; }
+		GraphElem get_nv() const { return nv_; }
+		GraphElem get_ne() const { return ne_; }
+
+		GraphElem get_base(const int rank) const
+		{ return parts_[rank]; }
+
+		GraphElem get_bound(const int rank) const
+		{ return parts_[rank+1]; }
+
+		GraphElem get_range(const int rank) const
+		{ return (parts_[rank+1] - parts_[rank] + 1); }
+
+		int get_owner(const GraphElem vertex) const
+		{
+		    const std::vector<GraphElem>::const_iterator iter = 
+                        std::upper_bound(parts_.begin(), parts_.end(), vertex);
+		    return (iter - parts_.begin() - 1);
+		}
+
+		// return local graph
+		Graph* local_graph() { return lg_; }
+
+		// local <--> global index translation
+		// -----------------------------------
+		GraphElem local_to_global(GraphElem idx)
+		{ return (idx + get_base(rank_)); }
+
+		GraphElem global_to_local(GraphElem idx)
+		{ return (idx - get_base(rank_)); }
+
+		// w.r.t passed rank
+		GraphElem local_to_global(GraphElem idx, int rank)
+		{ return (idx + get_base(rank)); }
+
+		GraphElem global_to_local(GraphElem idx, int rank)
+		{ return (idx - get_base(rank)); }
+
+		// print edge list (with weights)
+		void print(bool print_weight = true) const
+		{
+                    if (lne_ < MAX_PRINT_NEDGE)
+		    {
+			    for (int p = 0; p < size_; p++)
+			    {
+				    MPI_Barrier(comm_);
+				    if (p == rank_)
+				    {
+					    std::cout << "###############" << std::endl;
+					    std::cout << "Process #" << p << ": " << std::endl;
+					    std::cout << "###############" << std::endl;
+					    GraphElem base = get_base(p);
+					    for (GraphElem i = 0; i < lnv_; i++)
+					    {
+						    GraphElem e0, e1;
+						    lg_->edge_range(i, e0, e1);
+						    if (print_weight) { // print weights (default)
+							    for (GraphElem e = e0; e < e1; e++)
+							    {
+								    Edge const& edge = lg_->get_edge(e);
+								    std::cout << i+base << " " << edge.tail_ << " " << edge.weight_ << std::endl;
+							    }
+						    }
+						    else { // don't print weights
+							    for (GraphElem e = e0; e < e1; e++)
+							    {
+								    Edge const& edge = lg_->get_edge(e);
+								    std::cout << i+base << " " << edge.tail_ << std::endl;
+							    }
+						    }
+					    }
+					    MPI_Barrier(comm_);
+				    }
+			    }
+		    }
+		    else
+		    {
+			    if (rank_ == 0)
+				    std::cout << "Graph size per process is {" << lnv_ << ", " << lne_ << 
+					    "}, which will overwhelm STDOUT." << std::endl;
+		    }
+		}
+
+		// print statistics about edge distribution
+		// TODO FIXME check the data types
+		void print_dist_stats()
+		{
+			GraphElem sumdeg = 0, maxdeg = 0;
+
+			MPI_Reduce(&lne_, &sumdeg, 1, MPI_GRAPH_TYPE, MPI_SUM, 0, comm_);
+			MPI_Reduce(&lne_, &maxdeg, 1, MPI_GRAPH_TYPE, MPI_MAX, 0, comm_);
+			GraphElem my_sq = lne_*lne_;
+			GraphElem sum_sq = 0;
+			MPI_Reduce(&my_sq, &sum_sq, 1, MPI_GRAPH_TYPE, MPI_SUM, 0, comm_);
+			GraphWeight average  = (GraphWeight) sumdeg / size_;
+			GraphWeight avg_sq   = (GraphWeight) sum_sq / size_;
+			GraphWeight var = avg_sq - (average*average);
+			GraphWeight stddev  = sqrt(var);
+
+			MPI_Barrier(comm_);
+
+			if (rank_ == 0)
+			{
+				std::cout << std::endl;
+				std::cout << "-------------------------------------------------------" << std::endl;
+				std::cout << "Graph edge distribution characteristics" << std::endl;
+				std::cout << "-------------------------------------------------------" << std::endl;
+				std::cout << "Number of vertices: " << nv_ << std::endl;
+				std::cout << "Number of edges: " << ne_ << std::endl;
+				std::cout << "Maximum number of edges: " << maxdeg << std::endl;
+				std::cout << "Average number of edges: " << average << std::endl;
+				std::cout << "Expected value of X^2: " << avg_sq << std::endl;
+				std::cout << "Variance: " << var << std::endl;
+				std::cout << "Standard deviation: " << stddev << std::endl;
+				std::cout << "-------------------------------------------------------" << std::endl;
+			}
+		}
+	private:
+		Graph* lg_;
+		GraphElem lnv_, lne_, nv_, ne_;
+		std::vector<GraphElem> parts_;        
+		MPI_Comm comm_; 
+		int rank_, size_;
+};
 
 // read in binary edge list files
 // using MPI I/O
@@ -333,7 +389,7 @@ class BinaryEdgeList
         // the input binary file will be sorted by
         // vertices
         // read a file and return a graph
-        Graph* read(int me, int nprocs, int ranks_per_node, std::string file)
+        MPIGraph* read(int me, int nprocs, int ranks_per_node, std::string file)
         {
             int file_open_error;
             MPI_File fh;
@@ -366,8 +422,9 @@ class BinaryEdgeList
             // local graph
             M_local_ = ((M_*(me + 1)) / nprocs) - ((M_*me) / nprocs);
 
-            Graph* g = new Graph(M_local_, 0, M_, N_);
-            
+            MPIGraph* dg = new MPIGraph(M_local_, 0, M_, N_);
+            Graph* g = dg->local_graph();
+  
             // Let N = array length and P = number of processors.
             // From j = 0 to P-1,
             // Starting point of array on processor j = floor(N * j / P)
@@ -399,7 +456,7 @@ class BinaryEdgeList
             }    
 
             N_local_ = g->edge_indices_[M_local_] - g->edge_indices_[0];
-            g->set_nedges(N_local_);
+            dg->set_nedges(N_local_);
 
             tot_bytes = N_local_*(sizeof(Edge));
             offset = 2*sizeof(GraphElem) + (M_+1)*sizeof(GraphElem) + g->edge_indices_[0]*(sizeof(Edge));
@@ -459,7 +516,7 @@ class BinaryEdgeList
             }
             */
 
-            return g;
+            return dg;
         }
 
         // find a distribution such that every 
@@ -514,7 +571,7 @@ class BinaryEdgeList
 	// read a file and return a graph
 	// uses a balanced distribution
         // (approximately equal #edges per process) 
-        Graph* read_balanced(int me, int nprocs, int ranks_per_node, std::string file)
+        MPIGraph* read_balanced(int me, int nprocs, int ranks_per_node, std::string file)
         {
             int file_open_error;
             MPI_File fh;
@@ -557,9 +614,10 @@ class BinaryEdgeList
             M_local_ = mbins[me+1] - mbins[me];
 
             // create local graph
-            Graph *g = new Graph(M_local_, 0, M_, N_);
+            MPIGraph *dg = new MPIGraph(M_local_, 0, M_, N_);
             // readjust parts with new vertex partition
-            g->repart(mbins);
+            dg->repart(mbins);
+            Graph *g = dg->local_graph();
 
 	    uint64_t tot_bytes=(M_local_+1)*sizeof(GraphElem);
             MPI_Offset offset = 2*sizeof(GraphElem) + mbins[me]*sizeof(GraphElem);
@@ -586,7 +644,7 @@ class BinaryEdgeList
             }    
 
             N_local_ = g->edge_indices_[M_local_] - g->edge_indices_[0];
-            g->set_nedges(N_local_);
+            dg->set_nedges(N_local_);
 
             tot_bytes = N_local_*(sizeof(Edge));
             offset = 2*sizeof(GraphElem) + (M_+1)*sizeof(GraphElem) + g->edge_indices_[0]*(sizeof(Edge));
@@ -627,7 +685,7 @@ class BinaryEdgeList
 
             mbins.clear();
 
-            return g;
+            return dg;
         }
 
     private:
@@ -699,7 +757,7 @@ class GenerateRGG
         // use Euclidean distance as edge weight
         // for random edges, choose from (0,1)
         // otherwise, use unit weight throughout
-        Graph* generate(bool isLCG, bool unitEdgeWeight = true, int randomEdgePercent = 0)
+        MPIGraph* generate(bool isLCG, bool unitEdgeWeight = true, int randomEdgePercent = 0)
         {
             // Generate random coordinate points
             std::vector<GraphWeight> X, Y, X_up, Y_up, X_down, Y_down;
@@ -722,7 +780,8 @@ class GenerateRGG
             }
     
             // create local graph
-            Graph *g = new Graph(n_, 0, nv_, nv_);
+            MPIGraph *dg = new MPIGraph(n_, 0, nv_, nv_);
+            Graph *g = dg->local_graph();
 
             // generate random number within range
             // X: 0, 1
@@ -825,8 +884,8 @@ class GenerateRGG
                     // are the two vertices within the range?
                     if (ed <= rn_) {
                         // local to global index
-                        const GraphElem g_i = g->local_to_global(i);
-                        const GraphElem g_j = g->local_to_global(j);
+                        const GraphElem g_i = dg->local_to_global(i);
+                        const GraphElem g_j = dg->local_to_global(j);
 
                         if (!unitEdgeWeight) {
                             edgeList.emplace_back(i, g_j, ed);
@@ -879,7 +938,7 @@ class GenerateRGG
                             GraphWeight ed = sqrt(dx*dx + dy*dy);
                             
                             if (ed <= rn_) {
-                                const GraphElem g_i = g->local_to_global(i);
+                                const GraphElem g_i = dg->local_to_global(i);
                                 const GraphElem g_j = j + up_*n_;
 
                                 if (!unitEdgeWeight) {
@@ -911,7 +970,7 @@ class GenerateRGG
                             GraphWeight ed = sqrt(dx*dx + dy*dy);
 
                             if (ed <= rn_) {
-                                const GraphElem g_i = g->local_to_global(i);
+                                const GraphElem g_i = dg->local_to_global(i);
                                 const GraphElem g_j = j + down_*n_;
 
                                 if (!unitEdgeWeight) {
@@ -1058,13 +1117,13 @@ class GenerateRGG
                     // randomly pick start/end vertex and target from my list
                     const GraphElem i = (GraphElem)IR(re, std::uniform_int_distribution<GraphElem>::param_type{0, (n_- 1)});
                     const GraphElem g_j = (GraphElem)JR(re, std::uniform_int_distribution<GraphElem>::param_type{0, (nv_- 1)});
-                    const int target = g->get_owner(g_j);
-                    const GraphElem j = g->global_to_local(g_j, target); // local
+                    const int target = dg->get_owner(g_j);
+                    const GraphElem j = dg->global_to_local(g_j, target); // local
 
                     if (i == j) 
                         continue;
 
-                    const GraphElem g_i = g->local_to_global(i);
+                    const GraphElem g_i = dg->local_to_global(i);
                     
                     // check for duplicates prior to edgeList insertion
                     auto found = std::find_if(edgeList.begin(), edgeList.end(), 
@@ -1195,7 +1254,7 @@ class GenerateRGG
                 g->set_edge_index(i+1, g->edge_indices_[i+1]);
             
             const GraphElem nedges = g->edge_indices_[n_] - g->edge_indices_[0];
-            g->set_nedges(nedges);
+            dg->set_nedges(nedges);
             
             // set graph edge list
             // sort edge list
@@ -1260,7 +1319,7 @@ class GenerateRGG
             recvup_edges.clear();
             recvdn_edges.clear();
 
-            return g;
+            return dg;
         }
 
         GraphWeight get_d() const { return rn_; }
