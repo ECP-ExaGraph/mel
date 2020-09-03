@@ -18,6 +18,9 @@
 
 unsigned seed;
 
+#ifdef OMP_TARGET_OFFLOAD
+#pragma omp declare target
+#endif
 // (vite) graph converter ensures 
 // weights are 1.0 if not provided
 struct Edge
@@ -167,6 +170,9 @@ class Graph
 	GraphElem nv_, ne_;
 	std::array<GraphElem,2> range_;        
 };
+#ifdef OMP_TARGET_OFFLOAD
+#pragma omp end declare target
+#endif
 
 class MPIGraph
 {
