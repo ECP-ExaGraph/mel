@@ -698,7 +698,7 @@ class GenerateRGG
         // use Euclidean distance as edge weight
         // for random edges, choose from (0,1)
         // otherwise, use unit weight throughout
-        Graph* generate(bool isLCG, bool unitEdgeWeight = true, int randomEdgePercent = 0)
+        Graph* generate(bool isLCG, bool unitEdgeWeight = true, GraphWeight randomEdgePercent = 0.0)
         {
             // Generate random coordinate points
             std::vector<GraphWeight> X, Y, X_up, Y_up, X_down, Y_down;
@@ -1001,7 +1001,7 @@ class GenerateRGG
                 MPI_Allreduce(&pnedges, &tot_pnedges, 1, MPI_GRAPH_TYPE, MPI_SUM, comm_);
                 
                 // extra #edges per process
-                const GraphElem nrande = (((GraphElem)randomEdgePercent * tot_pnedges)/100);
+                const GraphElem nrande = (((GraphElem)(randomEdgePercent * (GraphWeight)tot_pnedges))/100);
                 GraphElem pnrande;
 
                 // TODO FIXME try to ensure a fair edge distibution
