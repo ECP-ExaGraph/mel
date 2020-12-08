@@ -181,8 +181,8 @@ class MPIGraph
 			lnv_(-1), lne_(-1), nv_(-1), 
 			ne_(-1), comm_(MPI_COMM_WORLD) 
 		{ lg_ = new Graph(); }
-
-		MPIGraph(GraphElem lnv, GraphElem lne, 
+		
+                MPIGraph(GraphElem lnv, GraphElem lne, 
 				GraphElem nv, GraphElem ne, 
 				MPI_Comm comm=MPI_COMM_WORLD): 
 			lnv_(lnv), lne_(lne), 
