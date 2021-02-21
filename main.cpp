@@ -38,7 +38,6 @@ static int generateGraph = 0;
 static GraphWeight randomEdgePercent = 0.0;
 static bool randomNumberLCG = false;
 static bool readBalanced = false;
-static double threshold = 1.0E-6;
 static bool isUnitEdgeWeight = true;
 
 // parse command line parameters
