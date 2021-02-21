@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
             MPI_SUM, 0, MPI_COMM_WORLD);
     if (me == 0)
         std::cout << "Execution time (in s) for maximal edge matching: " 
-            << (double)(t_tot/(double)nprocs) << std::endl;
+            << (double)(t_tot/(double)nprocs) << " on " << nprocs << " processes." << std::endl;
 
 #if defined(CHECK_RESULTS)    
     mt.check_results();
